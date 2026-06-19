@@ -124,6 +124,11 @@ Proceso de Estudio de Databricks: Data Analyst
   - [Los componentes núcleo](#los-componentes-núcleo)
     - [Delta Lake](#delta-lake)
     - [Unity Catalog](#unity-catalog)
+      - [El modelo de privilegios](#el-modelo-de-privilegios)
+      - [La herencia (el concepto clave)](#la-herencia-el-concepto-clave)
+      - [Los tres privilegios para leer una tabla](#los-tres-privilegios-para-leer-una-tabla)
+      - [Pasos para crear una tabla con privilegios](#pasos-para-crear-una-tabla-con-privilegios)
+      - [Seguridad fina sobre la tabla creada](#seguridad-fina-sobre-la-tabla-creada)
     - [Databricks SQL](#databricks-sql)
     - [Photon](#photon-1)
     - [Mosaic AI](#mosaic-ai)
@@ -158,7 +163,7 @@ Proceso de Estudio de Databricks: Data Analyst
   - [Section 7: Developing, Sharing, and Maintaining AI/BI Genie spaces](#section-7-developing-sharing-and-maintaining-aibi-genie-spaces)
   - [Section 8: Data Modeling with Databricks SQL](#section-8-data-modeling-with-databricks-sql)
   - [Section 9: Securing Data](#section-9-securing-data)
-- [Ejemplos de código - SQL](#ejemplos-de-código---sql)
+- [Más detalles de código - SQL](#más-detalles-de-código---sql)
   - [Agregación y nulos](#agregación-y-nulos)
   - [Joins, conjuntos, dedup y cast](#joins-conjuntos-dedup-y-cast)
   - [Ingesta y tablas](#ingesta-y-tablas)
@@ -787,7 +792,7 @@ La **streaming table** procesa datos que **llegan continuamente**, fila por fila
 
 ### Dynamic View
 
-La **dynamic view** es una vista con **lógica de seguridad** incrustada: enmascara o filtra columnas/filas **según quién consulta** (con `CASE` sobre el usuario o grupo). Su propósito no es rendimiento ni frescura, sino **proteger PII**. Conecta con la Sección de Securing Data.
+La **dynamic view** (VD) es una vista con **lógica de seguridad** incrustada: enmascara o filtra columnas/filas **según quién consulta** (con `CASE` sobre el usuario o grupo). Su propósito no es rendimiento ni frescura, sino **proteger PII**. Conecta con la Sección de Securing Data.
 
 > Ahora **la trampa estrella**, que es comparar streaming table vs. vista materializada. El enunciado típico te da dos casos a la vez:
 
@@ -802,6 +807,37 @@ La respuesta correcta cruza cada caso con su objeto: **Streaming Table para los 
 > La otra distinción que cae es **dynamic view vs. materialized view**, que suenan parecido pero no tienen nada que ver: la **dynamic** es para **seguridad** (esconder PII por usuario); la **materialized** es para **rendimiento** (precalcular). Si la pregunta habla de ocultar columnas sensibles según el rol del usuario → dynamic view, no materialized.
 
 > VIEW recalcula siempre (fresco pero lento); MATERIALIZED VIEW guarda el resultado precalculado y refresca por lotes (rápido, para BI sobre datos estáticos); STREAMING TABLE procesa datos continuos en tiempo real; DYNAMIC VIEW enmascara filas/columnas por usuario (seguridad/PII). Trampa: tiempo real → Streaming Table; BI estático → Materialized View; ocultar PII → Dynamic View.
+
+Una vista dinámica es una vista normal que, además de filtrar columnas, aplica seguridad por fila o por columna según quién esté consultando. La misma vista devuelve resultados distintos a cada usuario, sin duplicar la tabla. La magia está en dos funciones que preguntan "¿quién eres?":
+
+`is_account_group_member('grupo')` → devuelve true si el usuario pertenece a ese grupo.
+`current_user()` → devuelve el email/identidad del usuario que ejecuta la consulta.
+
+Seguridad por fila (cada usuario ve solo sus filas). Aquí el grupo managers ve todo, los demás solo su región:
+
+```sql
+CREATE VIEW ventas_seguras AS
+SELECT * FROM ventas
+WHERE is_account_group_member('managers')
+   OR region = current_user();
+```
+Seguridad por columna (enmascarar datos sensibles a quien no debe verlos). Aquí solo `hr_admins` ve el SSN real; el resto ve `REDACTED`:
+
+```sql
+CREATE VIEW empleados_seguros AS
+SELECT
+  id,
+  nombre,
+  CASE WHEN is_account_group_member('hr_admins')
+       THEN ssn
+       ELSE 'REDACTED'
+  END AS ssn
+FROM empleados;
+```
+
+
+
+
 
 ![alt text](images_md/image-13.png)
 
@@ -1017,6 +1053,20 @@ WHERE region = :region
 ```
 
 Fíjate dónde van: **dentro del SQL, típicamente en la cláusula `WHERE`** (que es justo donde se filtra). Cuando escribes `:region`, el SQL Editor **te genera automáticamente una caja de entrada** para ese parámetro.
+
+> En Databricks SQL, los parámetros permiten que una misma consulta o dashboard responda a distintos valores sin reescribir el código. Los tipos que acepta son siete: 
+> 1.  (caja de texto libre para un valor como el nombre de una región), 
+> 2. **Text**Number (solo valores numéricos, útil para umbrales), 
+> 3. **Date** (selector de una sola fecha), 
+> 4. **Date and Time** (fecha más hora puntual), 
+> 5. **Date Range** (selector de inicio y fin, que se usa para filtrar entre dos fechas en la cláusula WHERE), 
+> 6. **Dropdown List** (lista desplegable con opciones fijas que tú defines) y
+> 7. **Query-Based Dropdown** (lista desplegable cuyas opciones provienen de los resultados de otra consulta, de modo que se llena con valores reales y en vivo).
+>
+
+El query-based dropdown es el que más suele confundirse, así que conviene tener claro su flujo: primero se crea una consulta que devuelve los valores distintos que servirán de opciones, luego se define un parámetro de tipo dropdown, después se enlaza esa consulta como fuente del desplegable, y finalmente se conecta el parámetro a las visualizaciones que se quieren filtrar. El resultado es un filtro que se rellena solo con datos reales.
+
+Respecto a su comportamiento en el dashboard, cuando un parámetro tiene alcance global, cambiar su valor vuelve a ejecutar todas las visualizaciones enlazadas a él al mismo tiempo, no solo aquella con la que el usuario interactúa. Por eso, ante una pregunta del tipo "¿qué ocurre cuando el usuario cambia el parámetro order_date?", la respuesta correcta es que todas las visualizaciones ligadas a ese parámetro se recalculan con el nuevo valor de forma consistente.
 
 **El punto que pregunta el examen** Cómo **probar distintos valores antes de publicar** en un dashboard. 
 
@@ -1449,6 +1499,73 @@ Es bastante conceptual: reconocer **qué es cada pieza de la plataforma** y para
 ### Unity Catalog
 `Unity Catalog` → la capa de **gobierno**: permisos, linaje, descubrimiento y el namespace de 3 niveles.
 
+El metastore es el contenedor de más alto nivel en Unity Catalog: es donde viven todos los metadatos (la información sobre tus datos) y las reglas de acceso de tu organización en Databricks. Piénsalo como el "registro central" que sabe qué catálogos, esquemas, tablas, vistas y volúmenes existen, dónde están almacenados y quién puede acceder a cada cosa.
+
+La idea clave para el examen es dónde se ubica en la jerarquía. Unity Catalog organiza todo en niveles, y el metastore está en la cima:
+
+>Metastore  →  Catalog  →  Schema  →  Table / View / Volume
+
+Por eso, cuando referencias un objeto usas el namespace de tres niveles catalog.schema.objeto — el metastore es el nivel que contiene a todos los catálogos, pero no aparece en esa ruta porque hay un solo metastore por región.
+Tres puntos que conviene tener fijados:
+
+Vive a nivel de cuenta, no de workspace. Un metastore se crea una vez por región y se asigna a uno o varios workspaces. Esto es lo que permite que distintos workspaces compartan los mismos datos, identidades y permisos sin duplicarlos — la gran ventaja de Unity Catalog frente al modelo antiguo, donde cada workspace tenía su propio metastore aislado (el legacy Hive metastore).
+
+Es el ancla de la herencia de privilegios. Como está en la cima, un privilegio concedido a nivel de metastore cascada hacia abajo a todos los catálogos y sus hijos, salvo que un grant más específico lo modifique. (En la práctica los permisos se
+
+Lo administra el metastore admin. Es un rol específico que gestiona el metastore en sí (crear catálogos, asignar el metastore a workspaces, transferir propiedad). No lo confundas con el workspace admin, que administra cosas del espacio de trabajo pero no la gobernanza de datos a este nivel.
+
+
+Aquí tienes el resumen completo en prosa, listo para tu markdown:
+
+---
+
+**Privilegios, herencia y creación de tablas en Unity Catalog**
+
+#### El modelo de privilegios
+
+Unity Catalog usa un modelo de seguridad basado en **ANSI SQL estándar**, con los comandos familiares `GRANT`, `REVOKE` y `SHOW GRANTS`. Los privilegios se asignan a *principals* (usuarios, grupos o service principals), y la buena práctica es concederlos a **grupos**, no a usuarios individuales, para que la gestión escale.
+
+Los privilegios que más caen en el examen son: `USE CATALOG` y `USE SCHEMA` (privilegios de *traversía*, permiten "entrar" al catálogo y al esquema sin dar acceso a los datos), `SELECT` (leer una tabla o vista), `MODIFY` (insertar, actualizar o borrar filas), `CREATE` en sus variantes `CREATE SCHEMA` y `CREATE TABLE` (crear objetos nuevos), `EXECUTE` (ejecutar funciones), `READ VOLUME` y `WRITE VOLUME` (leer o escribir archivos en un volumen) y `ALL PRIVILEGES` (todos a la vez). El más amplio de todos es la **propiedad (ownership)**: el *owner* de un objeto puede concederlo o revocarlo, modificarlo y borrarlo, y conviene asignarlo a un grupo.
+
+#### La herencia (el concepto clave)
+
+La jerarquía es `Metastore → Catalog → Schema → Tabla / Vista / Volumen`, y los privilegios **se heredan en cascada hacia abajo**: un privilegio concedido en un nivel superior aplica automáticamente a todos los objetos hijos que estén debajo, **incluso a los que se creen después**. Por ejemplo, si concedes `SELECT` sobre un catálogo a un grupo, ese grupo podrá leer cualquier esquema y tabla nuevos que aparezcan en él sin necesidad de un grant adicional. Un grant más específico en un nivel inferior puede extender el acceso, pero el privilegio heredado del nivel superior se mantiene en vigor. Esta herencia es justamente lo que hace prácticos los patrones tipo "SELECT sobre todo el catálogo".
+
+#### Los tres privilegios para leer una tabla
+
+Para que alguien lea una tabla **no basta con `SELECT`**: Unity Catalog exige privilegios de traversía sobre los contenedores padre. El usuario necesita los tres juntos: `USE CATALOG` sobre el catálogo padre, `USE SCHEMA` sobre el esquema padre y `SELECT` sobre la tabla. Si solo se concede `SELECT`, el usuario recibe un error de permisos que menciona el catálogo. La sintaxis es:
+
+```sql
+GRANT USE CATALOG ON CATALOG marketing TO analytics_users;
+GRANT USE SCHEMA  ON SCHEMA  marketing.campaigns TO analytics_users;
+GRANT SELECT      ON TABLE   marketing.campaigns.events TO analytics_users;
+```
+
+La trampa típica del examen ofrece como distractores `MODIFY` y `CREATE` (que son más de lo necesario, sirven para escribir o crear), o roles como `METASTORE_ADMIN` o *workspace admin* (que tampoco hacen falta solo para leer una tabla).
+
+#### Pasos para crear una tabla con privilegios
+
+Para crear una tabla y dar acceso a un grupo, el flujo es: primero asegúrate de tener `CREATE TABLE` en el esquema destino (y `USE CATALOG` / `USE SCHEMA` para llegar a él); luego crea la tabla; finalmente concede los privilegios necesarios al grupo. Una tabla creada con `CREATE TABLE ... AS SELECT` queda como **managed** (Databricks gobierna metadatos y archivos); si añades `LOCATION '...'` se vuelve **external**.
+
+```sql
+CREATE TABLE gold.customer_summary AS
+SELECT * FROM csv_upload c
+JOIN parquet_table p ON c.id = p.id
+JOIN delta_table  d ON c.id = d.id;
+
+GRANT USE CATALOG ON CATALOG gold_catalog TO analytics_users;
+GRANT USE SCHEMA  ON SCHEMA  gold_catalog.gold TO analytics_users;
+GRANT SELECT      ON TABLE   gold_catalog.gold.customer_summary TO analytics_users;
+```
+
+Quien crea la tabla es su *owner* por defecto, así que ya puede conceder y revocar privilegios sobre ella sin pasos adicionales. Para verificar quién tiene acceso usas `SHOW GRANTS ON TABLE gold_catalog.gold.customer_summary;`, y para revocar, `REVOKE SELECT ON TABLE ... FROM analytics_users;`.
+
+#### Seguridad fina sobre la tabla creada
+
+Si además necesitas limitar **qué filas o columnas** ve cada usuario sin duplicar la tabla, aplicas un **row filter** o un **column mask** (features nativas de Unity Catalog), o creas una **vista dinámica** con `is_account_group_member()` / `current_user()`. El `GRANT SELECT` da acceso a la tabla entera; la seguridad por fila/columna se controla aparte con estos mecanismos.
+
+
+
 ### Databricks SQL
 `Databricks SQL` → el **servicio de análisis con SQL**: editor, SQL Warehouses, dashboards.
 
@@ -1698,7 +1815,31 @@ El criterio de examen de esta sección es de **flujo de trabajo del analista**: 
 ## Section 9: Securing Data 
 ![alt text](images_md/image-45.png)
 
-# Ejemplos de código - SQL
+# Más detalles de código - SQL
+
+**DM = Data Modeling**
+Esta sección cubre, en resumen, cómo estructurar las tablas para análisis: elegir el esquema correcto según el caso (estrella para BI rápido, snowflake para normalizar, galaxy cuando hay varios facts), definir claves y restricciones, aplicar el modelo medallion (bronze → silver → gold) y manejar historial con SCD Tipo 2.
+
+
+
+**"tiers de warehouse + regla refresh ≥ Auto Stop"** 
+Los tiers (niveles) de **SQL Warehouse** son tres, de **menor a mayor capacidad**:
+
+1. **Classic.** El nivel básico. El compute corre en *tu* cuenta de nube (la del cliente). Arranque más lento (minutos) y tú gestionas más. Es el más barato por hora pero con peor experiencia para BI interactivo.
+
+2. **Pro.** Igual que Classic pero con funciones avanzadas habilitadas: soporta **Genie**, características de IA, y mejor rendimiento. Sigue corriendo en tu cuenta de nube. Es el mínimo cuando necesitas Genie o conexiones BI serias y no quieres serverless.
+
+3. **Serverless.** El nivel premium. El compute lo gestiona y aloja **Databricks** (no tu cuenta), con arranque casi instantáneo (~15 segundos en lugar de minutos), incluye **Photon** y escala solo. Mejor experiencia y mejor costo total (no pagas capacidad ociosa porque levanta y apaga al instante). Es el recomendado para BI y dashboards.
+
+Lo que más cae en el examen sobre esto:
+
+**Genie y BI requieren Pro o Serverless.** Nunca Classic, ni clusters interactivos, ni jobs clusters, ni model endpoints. Si la pregunta dice "qué compute conecto para Power BI / para un Genie space" → la respuesta es **Serverless** (o Pro si serverless no está como opción).
+
+**El detalle distintivo de Serverless** es que el compute vive en la cuenta de **Databricks**, no en la del cliente, y por eso arranca en segundos. Esa frase ("managed by Databricks / instant startup") es la pista para identificarlo.
+
+
+> Los SQL Warehouse tienen tres tiers: **Classic** (básico, compute en la cuenta del cliente, arranque lento), **Pro** (añade Genie, IA y mejor rendimiento, aún en la cuenta del cliente) y **Serverless** (gestionado por Databricks, arranque casi instantáneo de ~15 s, incluye Photon y mejor costo total). Genie y las conexiones BI requieren Pro o Serverless; Classic no basta. La pista para identificar Serverless es que el compute lo aloja Databricks y levanta en segundos.
+
 
 1️⃣ SELECT     ← Qué columnas quieres
 2️⃣ FROM       ← De qué tabla
@@ -1796,6 +1937,45 @@ spark.readStream.format("cloudFiles")
   ```
 
 > Las trampas de sintaxis que ponen como distractores: BEFORE / AT TIME (no existen para time travel), PARTITIONED BY o ZORDER en lugar de CLUSTER BY, y GRANT TAG / SET COLUMN_TAGS para tags (inventados). La forma válida es la única correcta; las demás son sintaxis casi-creíble.
+
+**ALTER TABLE** - Modificar una tabla que ya existe
+
+Es el comando para cambiar la estructura de una tabla ya creada, sin volver a crearla. Con él agregas/quitas columnas, cambias propiedades, pones tags, máscaras o constraints. Piénsalo como "editar" la tabla.
+
+```sql
+ALTER TABLE clientes ADD COLUMN telefono STRING;              -- agregar columna
+ALTER TABLE clientes ALTER COLUMN telefono COMMENT 'celular'; -- describir columna
+ALTER TABLE clientes ALTER COLUMN telefono SET TAGS ('pii' = 'phone'); -- etiquetar
+```
+
+**CONSTRAINT** - Una regla que los datos deben cumplir
+
+Un constraint (restricción) es una regla de integridad que defines sobre una columna o tabla. Sirve para garantizar calidad, que un valor no sea nulo, que sea único, que esté en un rango, etc. Los principales:
+
+- **NOT NULL** - la columna no puede quedar vacía.
+- **CHECK (condición)** - el valor debe cumplir una condición (ej. amount >= 0).
+- **PRIMARY KEY** - identifica de forma única cada fila (la "clave principal").
+- **FOREIGN KEY** - enlaza esta tabla con otra (lo vemos abajo).
+
+```sql
+ALTER TABLE ventas ADD CONSTRAINT chk_monto CHECK (amount >= 0);
+```
+
+**FOREIGN KEY** - el puente entre dos tablas
+
+Una foreign key (clave foránea) es una columna que apunta a la primary key de otra tabla. Es lo que conecta, por ejemplo, una tabla de hechos con sus dimensiones (el "quién une a todos" del esquema estrella que veíamos).
+
+```sql
+-- dim_cliente tiene la PK; fact_ventas la referencia con una FK:
+ALTER TABLE dim_cliente ADD CONSTRAINT pk_cliente PRIMARY KEY (customer_id);
+ALTER TABLE fact_ventas  ADD CONSTRAINT fk_cliente
+  FOREIGN KEY (customer_id) REFERENCES dim_cliente(customer_id);
+```
+> Lee fk_cliente así: "la columna customer_id de fact_ventas debe corresponder a un customer_id que exista en dim_cliente."
+
+> ALTER TABLE = editar una tabla existente · CONSTRAINT = regla de integridad · FOREIGN KEY = columna que referencia la PK de otra tabla. En Databricks: PK/FK informativas, NOT NULL/CHECK reales.
+
+
 
 ## Agregación y nulos
 ![alt text](images_md/image-46.png)
