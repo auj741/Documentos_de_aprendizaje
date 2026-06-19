@@ -12,7 +12,6 @@ Cada documento se puede **visualizar directamente en el navegador** con un clic,
 | Databricks | Data Analyst | [🔗 Abrir HTML](https://auj741.github.io/Documentos_de_aprendizaje/Proceso_Estudio_DataAnalyst/ProcesoEstudio_Databricks_DataAnalyst.html) |
 
 ---
-
 ## ¿Cómo funciona?
 
 Los documentos están publicados con **GitHub Pages**, por lo que al hacer clic en "Abrir HTML" se muestran renderizados como una página web normal.
